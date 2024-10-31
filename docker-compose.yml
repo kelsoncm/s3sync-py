@@ -1,0 +1,11 @@
+services:
+
+    s3sync:
+        image: kelsoncm/s3sync-py
+        build:
+            context: .
+        env_file:
+            -  .env
+        volumes:
+            - ".:/apps/app"
+

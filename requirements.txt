@@ -1,0 +1,3 @@
+boto3
+sc4py
+python-dotenv
