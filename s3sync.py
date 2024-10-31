@@ -61,7 +61,7 @@ class S3Sync:
                 actual += 1.0
                 per = actual / todo * 100
                 try:
-                    logger.info(f"Mitrating '{key}'... {per:.3f}%, {actual}/{todo}, {done} discarded. Total: {total}.")
+                    logger.info(f"{per:.3f}%, {actual}/{todo}. Discarded: {done}. Total: {total}. Mitrating '{key}'.")
                     self.client.copy({"Bucket": self.SOURCE.BUCKET_NAME, "Key": key}, self.DESTINATION.BUCKET_NAME, key)
                     logger.info(f"'{key}' migrated with success.")
                 except ClientError as e:
