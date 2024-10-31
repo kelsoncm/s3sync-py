@@ -1,69 +1,77 @@
 import os
 import logging
+from typing import Any
 import boto3
-from botocore.exceptions import NoCredentialsError, PartialCredentialsError
+from botocore.exceptions import NoCredentialsError, PartialCredentialsError, ClientError
 from sc4py.env import env, env_as_list, env_as_bool
 
 
 logger = logging.getLogger(__name__)
 
+class S3Setting:
+    def __init__(self, kind: str):
+        # Configuração das credenciais do bucket de origem
+        self.BUCKET_NAME = env(f"{kind}_BUCKET_NAME")
+        self.ACCESS_KEY = env(f"{kind}_ACCESS_KEY")
+        self.SECRET_KEY = env(f"{kind}_SECRET_KEY")
 
-# Configuração das credenciais do bucket de origem e destino
-SOURCE_BUCKET_NAME = env("SOURCE_BUCKET_NAME")
-SOURCE_ACCESS_KEY = env("SOURCE_ACCESS_KEY")
-SOURCE_SECRET_KEY = env("SOURCE_SECRET_KEY")
-DESTINATION_BUCKET_NAME = env("DESTINATION_BUCKET_NAME")
-DESTINATION_ACCESS_KEY = env("DESTINATION_ACCESS_KEY")
-DESTINATION_SECRET_KEY = env("DESTINATION_SECRET_KEY")
+        # Validar credenciais
+        if not all([self.BUCKET_NAME, self.ACCESS_KEY, self.SECRET_KEY]):
+            raise ValueError(f"Bucket name or credentials for {kind} not informed in environment variables.")
 
-# Validar credenciais
-if not all([SOURCE_BUCKET_NAME, SOURCE_ACCESS_KEY, SOURCE_SECRET_KEY,
-            DESTINATION_BUCKET_NAME, DESTINATION_ACCESS_KEY, DESTINATION_SECRET_KEY]):
-    raise ValueError("Credenciais ou nomes de buckets estão faltando no arquivo .env")
 
-def migrate_objects():
-    try:
+class S3Sync:
+    def __init__(self):
+        self.SOURCE = S3Setting("SOURCE")
+        self.DESTINATION = S3Setting("DESTINATION")
 
-        # Conectar aos buckets S3 com credenciais específicas
-        source_s3 = boto3.client("s3",
-            aws_access_key_id=SOURCE_ACCESS_KEY,
-            aws_secret_access_key=SOURCE_SECRET_KEY
-        )
+        self.sources = {}
+        self.destinations = {}
+        self.client = None
+        self.to_sync = None
 
-        destination_s3 = boto3.client(
+    def __get_all_s3(self, setting: S3Setting) -> dict[str, Any]:
+        logger.info(f"Reading bulk {setting.BUCKET_NAME}")
+        aws_session = boto3.Session(aws_access_key_id=setting.ACCESS_KEY, aws_secret_access_key=setting.SECRET_KEY)
+        s3_resource = aws_session.resource("s3")
+        result = {x.key: x for x in s3_resource.Bucket(setting.BUCKET_NAME).objects.all()}
+        logger.info(f"Bulk {setting.BUCKET_NAME} readed")
+        return result
+
+    def read(self):
+        self.sources = self.__get_all_s3(self.SOURCE)
+        self.destinations = self.__get_all_s3(self.DESTINATION)
+        self.to_sync = [v for k, v in self.sources.items() if k not in self.destinations]
+
+        self.client = boto3.client(
             "s3",
-            aws_access_key_id=DESTINATION_ACCESS_KEY,
-            aws_secret_access_key=DESTINATION_SECRET_KEY
+            aws_access_key_id=self.DESTINATION.ACCESS_KEY,
+            aws_secret_access_key=self.DESTINATION.SECRET_KEY
         )
 
-        # Listar objetos no bucket de origem
-        response = source_s3.list_objects_v2(Bucket=SOURCE_BUCKET_NAME)
+    def execute(self):
+        self.read()
 
-        if "Contents" not in response:
-            logger.error("Nenhum objeto encontrado no bucket de origem.")
-            return
-
-        for item in response["Contents"]:
-            file_key = item["Key"]
-            logger.info(f"Migrando '{file_key}'...")
-
-            # Copiar o objeto para o bucket de destino
-            copy_source = {"Bucket": SOURCE_BUCKET_NAME,"Key": file_key}
-
-            destination_s3.copy(copy_source, DESTINATION_BUCKET_NAME, file_key)
-            logger.info(f"'{file_key}' migrado com sucesso.")
-
-        logger.info("Migração concluída.")
-
-    except NoCredentialsError:
-        logger.error("Erro: Credenciais não encontradas.")
-    except PartialCredentialsError:
-        logger.error("Erro: Credenciais incompletas.")
-    except Exception as e:
-        logger.error(f"Erro durante a migração: {e}")
+        try:
+            total = len(self.sources)
+            done = total - len(self.to_sync)
+            todo = total - done
+            actual = 0.0
+            for key in self.sources.keys():
+                actual += 1.0
+                per = actual / todo * 100
+                try:
+                    logger.info(f"Mitrating '{key}'... {per:.3f}%, {actual}/{todo}, {done} discarded. Total: {total}.")
+                    self.client.copy({"Bucket": self.SOURCE.BUCKET_NAME, "Key": key}, self.DESTINATION.BUCKET_NAME, key)
+                    logger.info(f"'{key}' migrated with success.")
+                except ClientError as e:
+                    logger.error(f"Error migrating: {e}. We will continue.")
+            logger.info("Migration done.")
+        except Exception as e:
+            logger.error(f"Error ({type(e)}): {e}")
 
 
 if __name__ == "__main__":
-    # Executar a migração
     logging.basicConfig(level=logging.INFO)
-    migrate_objects()
+    S3Sync().execute()
+    # migrate_objects()
